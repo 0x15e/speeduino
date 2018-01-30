@@ -449,7 +449,7 @@ struct config2 {
   byte useResync : 1;
 
   byte sparkDur; //Spark duration in ms * 10
-  bool trigPatternSec; //Mode for Missing tooth secondary trigger.  Either single tooth cam wheel or 4-1
+  byte trigPatternSec; //Mode for Missing tooth secondary trigger.  Either single tooth cam wheel or 4-1
   uint8_t bootloaderCaps; //Capabilities of the bootloader over stock. e.g., 0=Stock, 1=Reset protection, etc.
 
   byte resetControl : 2; //Which method of reset control to use (0=None, 1=Prevent When Running, 2=Prevent Always, 3=Serial Command)
@@ -773,6 +773,6 @@ extern byte iatCalibrationTable[CALIBRATION_TABLE_SIZE];
 extern byte o2CalibrationTable[CALIBRATION_TABLE_SIZE];
 
 // alias(es) for ease of code reading!!
-bool& trigPatternSec = configPage2.trigPatternSec;
+byte& trigPatternSec = configPage2.trigPatternSec;
 
 #endif // GLOBALS_H

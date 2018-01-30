@@ -3,6 +3,10 @@
 #include <Arduino.h>
 #include "table.h"
 
+//These are configuration options for changing around the outputs that are used
+#define INJ_CHANNELS 4
+#define IGN_CHANNELS 5
+
 #if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega2561__)
   #define BOARD_DIGITAL_GPIO_PINS 54
   #define BOARD_NR_GPIO_PINS 62
@@ -13,8 +17,10 @@
   #define BOARD_NR_GPIO_PINS 34
 #elif defined(STM32_MCU_SERIES) || defined(ARDUINO_ARCH_STM32) || defined(__STM32F1__) || defined(STM32F4) || defined(STM32)
   #define CORE_STM32
+  #define word(h, l) ((h << 8) | l) //word() function not defined for this platform in the main library
   #if defined (STM32F1) || defined(__STM32F1__)
     #define BOARD_DIGITAL_GPIO_PINS 34
+    #undef BOARD_NR_GPIO_PINS //This is declared as 49 in .../framework-arduinoststm32/STM32F1/variants/generic_stm32f103r8/board/board.h
     #define BOARD_NR_GPIO_PINS 34
     #define LED_BUILTIN 33
   #elif defined(ARDUINO_BLACK_F407VE) || defined(STM32F4)
@@ -34,8 +40,11 @@
     #define portOutputRegister(port) (volatile byte *)( &(port->ODR) )
     #define portInputRegister(port) (volatile byte *)( &(port->IDR) )
   #else //libmaple core aka STM32DUINO
-    #define portOutputRegister(port) (volatile byte *)( &(port->regs->ODR) ) //These are defined in STM32F1/variants/generic_stm32f103c/variant.h but return a non byte* value
-    #define portInputRegister(port) (volatile byte *)( &(port->regs->IDR) ) //These are defined in STM32F1/variants/generic_stm32f103c/variant.h but return a non byte* value
+    //These are defined in STM32F1/variants/generic_stm32f103c/variant.h but return a non byte* value
+    #undef portOutputRegister
+    #undef portInputRegister
+    #define portOutputRegister(port) (volatile byte *)( &(port->regs->ODR) )
+    #define portInputRegister(port) (volatile byte *)( &(port->regs->IDR) )
   #endif
 #else
   #error Incorrect board selected. Please select the correct board (Usually Mega 2560) and upload again
@@ -122,6 +131,9 @@
 #define IGN_MODE_WASTEDCOP  2
 #define IGN_MODE_SEQUENTIAL 3
 #define IGN_MODE_ROTARY     4
+
+#define SEC_TRIGGER_SINGLE  0
+#define SEC_TRIGGER_4_1     1
 
 #define ROTARY_IGN_FC       0
 #define ROTARY_IGN_FD       1
@@ -233,6 +245,9 @@ bool channel2InjEnabled = false;
 bool channel3InjEnabled = false;
 bool channel4InjEnabled = false;
 bool channel5InjEnabled = false;
+bool channel6InjEnabled = false;
+bool channel7InjEnabled = false;
+bool channel8InjEnabled = false;
 
 int ignition1EndAngle = 0;
 int ignition2EndAngle = 0;
@@ -301,6 +316,10 @@ struct statuses {
   unsigned int PW2; //In uS
   unsigned int PW3; //In uS
   unsigned int PW4; //In uS
+  unsigned int PW5; //In uS
+  unsigned int PW6; //In uS
+  unsigned int PW7; //In uS
+  unsigned int PW8; //In uS
   volatile byte runSecs; //Counter of seconds since cranking commenced (overflows at 255 obviously)
   volatile byte secl; //Continous
   volatile unsigned int loopsPerSecond;
@@ -332,7 +351,7 @@ struct statuses currentStatus; //The global status object
 
 //Page 1 of the config - See the ini file for further reference
 //This mostly covers off variables that are required for fuel
-struct config1 {
+struct config2 {
 
   byte unused2_1;
   byte unused2_2;
@@ -432,7 +451,7 @@ struct config1 {
 
 //Page 2 of the config - See the ini file for further reference
 //This mostly covers off variables that are required for ignition
-struct config2 {
+struct config4 {
 
   int16_t triggerAngle;
   byte FixAng;
@@ -496,9 +515,9 @@ struct config2 {
   } __attribute__((__packed__)); //The 32 bi systems require all structs to be fully packed
 #endif
 
-//Page 3 of the config - See the ini file for further reference
+//Page 6 of the config - See the ini file for further reference
 //This mostly covers off variables that are required for AFR targets and closed loop
-struct config3 {
+struct config6 {
 
   byte egoAlgorithm : 2;
   byte egoType : 2;
@@ -590,9 +609,9 @@ struct config3 {
   } __attribute__((__packed__)); //The 32 bit systems require all structs to be fully packed
 #endif
 
-//Page 10 of the config mostly deals with CANBUS control
+//Page 9 of the config mostly deals with CANBUS control
 //See ini file for further info (Config Page 10 in the ini)
-struct config10 {
+struct config9 {
   byte enable_canbus:2;
   byte enable_candata_in:1;
   uint16_t caninput_sel;                    //bit status on/off if input is enabled
@@ -642,11 +661,11 @@ struct config10 {
 #endif
 
 /*
-Page 11 - No specific purpose. Created initially for the cranking enrich curve
+Page 10 - No specific purpose. Created initially for the cranking enrich curve
 192 bytes long
 See ini file for further info (Config Page 11 in the ini)
 */
-struct config11 {
+struct config10 {
   byte crankingEnrichBins[4];
   byte crankingEnrichValues[4];
 
@@ -679,17 +698,6 @@ struct config11 {
 #else
   } __attribute__((__packed__)); //The 32 bit systems require all structs to be fully packed
 #endif
-
-struct flexCachedLookups
-{
-  bool fuelReady;
-  bool advanceReady;
-  bool boostReady;
-  byte fuel;
-  byte advance;
-  int16_t boost;
-};
-struct flexCachedLookups flexLookupCache = { false, false, false, 0, 0, 0 };
 
 byte pinInjector1; //Output pin injector 1
 byte pinInjector2; //Output pin injector 2
@@ -760,11 +768,11 @@ extern struct table3D stagingTable; //8x8 afr target map
 extern struct table2D taeTable; //4 bin TPS Acceleration Enrichment map (2D)
 extern struct table2D WUETable; //10 bin Warm Up Enrichment map (2D)
 extern struct table2D crankingEnrichTable; //4 bin cranking Enrichment map (2D)
-extern struct config1 configPage1;
 extern struct config2 configPage2;
-extern struct config3 configPage3;
+extern struct config4 configPage4;
+extern struct config6 configPage6;
+extern struct config9 configPage9;
 extern struct config10 configPage10;
-extern struct config11 configPage11;
 extern unsigned long currentLoopTime; //The time the current loop started (uS)
 extern unsigned long previousLoopTime; //The time the previous loop started (uS)
 volatile uint16_t ignitionCount; //The count of ignition events that have taken place since the engine started
@@ -773,6 +781,6 @@ extern byte iatCalibrationTable[CALIBRATION_TABLE_SIZE];
 extern byte o2CalibrationTable[CALIBRATION_TABLE_SIZE];
 
 // alias(es) for ease of code reading!!
-byte& trigPatternSec = configPage2.trigPatternSec;
+byte& trigPatternSec = configPage4.trigPatternSec;
 
 #endif // GLOBALS_H
